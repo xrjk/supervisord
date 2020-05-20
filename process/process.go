@@ -93,6 +93,7 @@ type Process struct {
 	inStart bool
 	//true if the process is stopped by user
 	stopByUser bool
+	startFail  bool
 	retryTimes *int32
 	lock       sync.RWMutex
 	stdin      io.WriteCloser
@@ -110,6 +111,7 @@ func NewProcess(supervisorID string, config *config.Entry) *Process {
 		state:      Stopped,
 		inStart:    false,
 		stopByUser: false,
+		startFail:  false,
 		retryTimes: new(int32)}
 	proc.config = config
 	proc.cmd = nil
@@ -175,6 +177,10 @@ func (p *Process) Start(wait bool) {
 			}
 			if p.stopByUser {
 				log.WithFields(log.Fields{"program": p.GetName()}).Info("Stopped by user, don't start it again")
+				break
+			}
+			if p.startFail {
+				log.WithFields(log.Fields{"program": p.GetName()}).Info("Start fail than retrytimes, don't start it again")
 				break
 			}
 			if !p.isAutoRestart() {
@@ -598,6 +604,7 @@ func (p *Process) run(finishCb func()) {
 		// start the program before giving up and putting the process into an Fatal state
 		// first start time is not the retry time
 		if atomic.LoadInt32(p.retryTimes) >= p.getStartRetries() {
+			p.startFail = true
 			p.failToStartProgram(fmt.Sprintf("fail to start program because retry times is greater than %d", p.getStartRetries()), finishCbWrapper)
 			break
 		}
