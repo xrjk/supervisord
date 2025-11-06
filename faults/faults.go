@@ -45,7 +45,7 @@ const (
 	// NotRunning not running result code
 	NotRunning = 70
 
-	// Success sucess result code
+	// Success success result code
 	Success = 80
 
 	// AlreadyAdded already added result code
@@ -58,7 +58,7 @@ const (
 	CantReRead = 92
 )
 
-// NewFault create a Fault object as xml rpc result
+// NewFault creates Fault object as xml rpc result
 func NewFault(code int, desc string) error {
 	return &xmlrpc.Fault{Code: code, String: desc}
 }

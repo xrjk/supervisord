@@ -8,17 +8,17 @@ import (
 // ProgramByPriority sort program by its priority
 type ProgramByPriority []*Entry
 
-// Len number of programs
+// Len returns amount of programs
 func (p ProgramByPriority) Len() int {
 	return len(p)
 }
 
-// Swap swap program i and program j
+// Swap swaps program i and program j
 func (p ProgramByPriority) Swap(i, j int) {
 	p[i], p[j] = p[j], p[i]
 }
 
-// Less return true if the priority ith program is less than the priority of jth program
+// Less returns true if the priority i-th program is less than the priority of j-th program
 func (p ProgramByPriority) Less(i, j int) bool {
 	return p[i].GetInt("priority", 999) < p[j].GetInt("priority", 999)
 }
@@ -29,14 +29,14 @@ type ProcessSorter struct {
 	procsWithooutDepends []*Entry
 }
 
-// NewProcessSorter create a sorter
+// NewProcessSorter creates sorter
 func NewProcessSorter() *ProcessSorter {
 	return &ProcessSorter{dependsOnGraph: make(map[string][]string),
 		procsWithooutDepends: make([]*Entry, 0)}
 }
 
 func (p *ProcessSorter) initDepends(programConfigs []*Entry) {
-	//sort by dependsOn
+	// sort by dependsOn
 	for _, config := range programConfigs {
 		if config.IsProgram() && config.HasParameter("depends_on") {
 			dependsOn := config.GetString("depends_on", "")
@@ -85,7 +85,7 @@ func (p *ProcessSorter) sortDepends() []string {
 	progsWithDependsInfo := p.getDependsOnInfo()
 	progsStartOrder := make([]string, 0)
 
-	//get all process without depends
+	// get all process without depends
 	for progName := range progsWithDependsInfo {
 		if _, ok := p.dependsOnGraph[progName]; !ok {
 			finishedPrograms[progName] = progName

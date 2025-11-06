@@ -19,8 +19,8 @@ password=thepassword
 
 [supervisord]
 logfile=%(here)s/supervisord.log
-logfile_maxbytes=50MB
-logfile_backups=10
+logfileMaxbytes=50MB
+logfileBackups=10
 loglevel=info
 pidfile=%(here)s/supervisord.pid
 #umask=not support
@@ -62,6 +62,7 @@ stderr_logfile_backups=10
 stderr_capture_maxbytes=0
 stderr_events_enabled=false
 environment=KEY="val",KEY2="val2"
+envFiles=global.env,prod.env
 directory=/tmp
 #umask=not support
 serverurl=AUTO
@@ -100,6 +101,7 @@ stderr_logfile_backups=10
 stderr_capture_maxbytes=0
 stderr_events_enabled=false
 environment=KEY="val",KEY2="val2"
+envFiles=global.env,prod.env
 directory=/tmp
 #umask=not support
 serverurl=AUTO
@@ -114,7 +116,7 @@ password = 123
 #prompt = not support
 `
 
-// InitTemplateCommand implemnts flags.Commander interface
+// InitTemplateCommand implements flags.Commander interface
 type InitTemplateCommand struct {
 	OutFile string `short:"o" long:"output" description:"the output file name" required:"true"`
 }
@@ -127,7 +129,9 @@ func (x *InitTemplateCommand) Execute(args []string) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func(f *os.File) {
+		_ = f.Close()
+	}(f)
 	return GenTemplate(f)
 }
 

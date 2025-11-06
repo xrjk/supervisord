@@ -10,7 +10,8 @@ import (
 	"strconv"
 	"strings"
 
-	ini "github.com/ochinchina/go-ini"
+	"github.com/hashicorp/go-envparse"
+	"github.com/ochinchina/go-ini"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -22,12 +23,12 @@ type Entry struct {
 	keyValues map[string]string
 }
 
-// IsProgram return true if this is a program section
+// IsProgram returns true if this is a program section
 func (c *Entry) IsProgram() bool {
 	return strings.HasPrefix(c.Name, "program:")
 }
 
-// GetProgramName get the program name
+// GetProgramName returns program name
 func (c *Entry) GetProgramName() string {
 	if strings.HasPrefix(c.Name, "program:") {
 		return c.Name[len("program:"):]
@@ -35,12 +36,12 @@ func (c *Entry) GetProgramName() string {
 	return ""
 }
 
-// IsEventListener return true if this section is for event listener
+// IsEventListener returns true if this section is for event listener
 func (c *Entry) IsEventListener() bool {
 	return strings.HasPrefix(c.Name, "eventlistener:")
 }
 
-// GetEventListenerName get the event listener name
+// GetEventListenerName returns event listener name
 func (c *Entry) GetEventListenerName() string {
 	if strings.HasPrefix(c.Name, "eventlistener:") {
 		return c.Name[len("eventlistener:"):]
@@ -48,12 +49,12 @@ func (c *Entry) GetEventListenerName() string {
 	return ""
 }
 
-// IsGroup return true if it is group section
+// IsGroup returns true if it is group section
 func (c *Entry) IsGroup() bool {
 	return strings.HasPrefix(c.Name, "group:")
 }
 
-// GetGroupName get the group name if this entry is group
+// GetGroupName returns group name if entry is a group
 func (c *Entry) GetGroupName() string {
 	if strings.HasPrefix(c.Name, "group:") {
 		return c.Name[len("group:"):]
@@ -61,7 +62,7 @@ func (c *Entry) GetGroupName() string {
 	return ""
 }
 
-// GetPrograms get the programs from the group
+// GetPrograms returns slice with programs from the group
 func (c *Entry) GetPrograms() []string {
 	if c.IsGroup() {
 		r := c.GetStringArray("programs", ",")
@@ -77,38 +78,35 @@ func (c *Entry) setGroup(group string) {
 	c.Group = group
 }
 
-// String dump the configuration as string
+// String dumps configuration as a string
 func (c *Entry) String() string {
 	buf := bytes.NewBuffer(make([]byte, 0))
-	fmt.Fprintf(buf, "configDir=%s\n", c.ConfigDir)
-	fmt.Fprintf(buf, "group=%s\n", c.Group)
 	for k, v := range c.keyValues {
 		fmt.Fprintf(buf, "%s=%s\n", k, v)
 	}
 	return buf.String()
-
 }
 
-// Config memory reprentations of supervisor configuration file
+// Config memory representation of supervisor configuration file
 type Config struct {
 	configFile string
-	//mapping between the section name and the configure
+	// mapping between the section name and configuration entry
 	entries map[string]*Entry
 
 	ProgramGroup *ProcessGroup
 }
 
-// NewEntry create a configuration entry
+// NewEntry creates configuration entry
 func NewEntry(configDir string) *Entry {
 	return &Entry{configDir, "", "", make(map[string]string)}
 }
 
-// NewConfig create Config object
+// NewConfig creates Config object
 func NewConfig(configFile string) *Config {
 	return &Config{configFile, make(map[string]*Entry), NewProcessGroup()}
 }
 
-//create a new entry or return the already-exist entry
+// create a new entry or return the already-exist entry
 func (c *Config) createEntry(name string, configDir string) *Entry {
 	entry, ok := c.entries[name]
 
@@ -120,17 +118,19 @@ func (c *Config) createEntry(name string, configDir string) *Entry {
 }
 
 //
-// Load load the configuration and return the loaded programs
+// Load the configuration and return loaded programs
 func (c *Config) Load() ([]string, error) {
-	ini := ini.NewIni()
+	myini := ini.NewIni()
 	c.ProgramGroup = NewProcessGroup()
-	ini.LoadFile(c.configFile)
+	log.WithFields(log.Fields{"file": c.configFile}).Info("load configuration from file")
+	myini.LoadFile(c.configFile)
 
-	includeFiles := c.getIncludeFiles(ini)
+	includeFiles := c.getIncludeFiles(myini)
 	for _, f := range includeFiles {
-		ini.LoadFile(f)
+		log.WithFields(log.Fields{"file": f}).Info("load configuration from file")
+		myini.LoadFile(f)
 	}
-	return c.parse(ini), nil
+	return c.parse(myini), nil
 }
 
 func (c *Config) getIncludeFiles(cfg *ini.Ini) []string {
@@ -148,6 +148,8 @@ func (c *Config) getIncludeFiles(cfg *ini.Ini) []string {
 				}
 				if filepath.IsAbs(f) {
 					dir = filepath.Dir(f)
+				} else {
+					dir = filepath.Join(c.GetConfigFileDir(), filepath.Dir(f))
 				}
 				fileInfos, err := ioutil.ReadDir(dir)
 				if err == nil {
@@ -163,14 +165,14 @@ func (c *Config) getIncludeFiles(cfg *ini.Ini) []string {
 		}
 	}
 	return result
-
 }
 
 func (c *Config) parse(cfg *ini.Ini) []string {
+	c.setProgramDefaultParams(cfg)
 	c.parseGroup(cfg)
 	loadedPrograms := c.parseProgram(cfg)
 
-	//parse non-group,non-program and non-eventlistener sections
+	// parse non-group, non-program and non-eventlistener sections
 	for _, section := range cfg.Sections() {
 		if !strings.HasPrefix(section.Name, "group:") && !strings.HasPrefix(section.Name, "program:") && !strings.HasPrefix(section.Name, "eventlistener:") {
 			entry := c.createEntry(section.Name, c.GetConfigFileDir())
@@ -178,37 +180,33 @@ func (c *Config) parse(cfg *ini.Ini) []string {
 			entry.parse(section)
 		}
 	}
-	c.setProgramDefaultParams()
 	return loadedPrograms
 }
 
-// set the default parameteres of programs
-func (c *Config) setProgramDefaultParams() {
-	defParams, ok := c.entries["program-default"]
-
-	if ok {
-		for _, entry := range c.entries {
-			if !entry.IsProgram() {
+// set the default parameters of programs
+func (c *Config) setProgramDefaultParams(cfg *ini.Ini) {
+	programDefaultSection, err := cfg.GetSection("program-default")
+	if err == nil {
+		for _, section := range cfg.Sections() {
+			if section.Name == "program-default" || !strings.HasPrefix(section.Name, "program:") {
 				continue
 			}
-			for param, value := range defParams.keyValues {
-				v, exist := entry.keyValues[param]
-				if !exist || len(v) <= 0 {
-					entry.keyValues[param] = value
+			for _, key := range programDefaultSection.Keys() {
+				if !section.HasKey(key.Name()) {
+					section.Add(key.Name(), key.ValueWithDefault(""))
 				}
 			}
 
 		}
 	}
-
 }
 
-// GetConfigFileDir get the directory of supervisor configuration file
+// GetConfigFileDir returns directory of supervisord configuration file
 func (c *Config) GetConfigFileDir() string {
 	return filepath.Dir(c.configFile)
 }
 
-//convert supervisor file pattern to the go regrexp
+// convert supervisor file pattern to the go regrexp
 func toRegexp(pattern string) string {
 	tmp := strings.Split(pattern, ".")
 	for i, t := range tmp {
@@ -218,32 +216,32 @@ func toRegexp(pattern string) string {
 	return strings.Join(tmp, "\\.")
 }
 
-// GetUnixHTTPServer get the unix_http_server section
+// GetUnixHTTPServer returns unix_http_server configuration section
 func (c *Config) GetUnixHTTPServer() (*Entry, bool) {
 	entry, ok := c.entries["unix_http_server"]
 
 	return entry, ok
 }
 
-//GetSupervisord get the supervisord section
+// GetSupervisord returns "supervisord" configuration section
 func (c *Config) GetSupervisord() (*Entry, bool) {
 	entry, ok := c.entries["supervisord"]
 	return entry, ok
 }
 
-// GetInetHTTPServer Get the inet_http_server configuration section
+// GetInetHTTPServer returns inet_http_server configuration section
 func (c *Config) GetInetHTTPServer() (*Entry, bool) {
 	entry, ok := c.entries["inet_http_server"]
 	return entry, ok
 }
 
-// GetSupervisorctl Get the "supervisorctl" section
+// GetSupervisorctl returns "supervisorctl" configuration section
 func (c *Config) GetSupervisorctl() (*Entry, bool) {
 	entry, ok := c.entries["supervisorctl"]
 	return entry, ok
 }
 
-// GetEntries get the configuration entries by filter
+// GetEntries returns configuration entries by filter
 func (c *Config) GetEntries(filterFunc func(entry *Entry) bool) []*Entry {
 	result := make([]*Entry, 0)
 	for _, entry := range c.entries {
@@ -254,14 +252,14 @@ func (c *Config) GetEntries(filterFunc func(entry *Entry) bool) []*Entry {
 	return result
 }
 
-// GetGroups get entries of all the program groups
+// GetGroups returns configuration entries of all program groups
 func (c *Config) GetGroups() []*Entry {
 	return c.GetEntries(func(entry *Entry) bool {
 		return entry.IsGroup()
 	})
 }
 
-// GetPrograms get entries of all programs
+// GetPrograms returns configuration entries of all programs
 func (c *Config) GetPrograms() []*Entry {
 	programs := c.GetEntries(func(entry *Entry) bool {
 		return entry.IsProgram()
@@ -270,7 +268,7 @@ func (c *Config) GetPrograms() []*Entry {
 	return sortProgram(programs)
 }
 
-// GetEventListeners get event listeners
+// GetEventListeners returns configuration entries of event listeners
 func (c *Config) GetEventListeners() []*Entry {
 	eventListeners := c.GetEntries(func(entry *Entry) bool {
 		return entry.IsEventListener()
@@ -279,7 +277,7 @@ func (c *Config) GetEventListeners() []*Entry {
 	return eventListeners
 }
 
-// GetProgramNames get all the program names
+// GetProgramNames returns slice with all program names
 func (c *Config) GetProgramNames() []string {
 	result := make([]string, 0)
 	programs := c.GetPrograms()
@@ -291,7 +289,7 @@ func (c *Config) GetProgramNames() []string {
 	return result
 }
 
-// GetProgram return the proram configure entry or nil
+// GetProgram returns the program configuration entry or nil
 func (c *Config) GetProgram(name string) *Entry {
 	for _, entry := range c.entries {
 		if entry.IsProgram() && entry.GetProgramName() == name {
@@ -301,7 +299,7 @@ func (c *Config) GetProgram(name string) *Entry {
 	return nil
 }
 
-// GetBool get value of key as bool
+// GetBool gets value of key as bool
 func (c *Entry) GetBool(key string, defValue bool) bool {
 	value, ok := c.keyValues[key]
 
@@ -314,7 +312,7 @@ func (c *Entry) GetBool(key string, defValue bool) bool {
 	return defValue
 }
 
-// HasParameter check if has parameter
+// HasParameter checks if key (parameter) has value
 func (c *Entry) HasParameter(key string) bool {
 	_, ok := c.keyValues[key]
 	return ok
@@ -328,7 +326,7 @@ func toInt(s string, factor int, defValue int) int {
 	return defValue
 }
 
-// GetInt get the value of the key as int
+// GetInt gets value of the key as int
 func (c *Entry) GetInt(key string, defValue int) int {
 	value, ok := c.keyValues[key]
 
@@ -338,63 +336,124 @@ func (c *Entry) GetInt(key string, defValue int) int {
 	return defValue
 }
 
-// GetEnv get the value of key as environment setting. An environment string example:
+func parseEnv(s string) *map[string]string {
+	result := make(map[string]string)
+	start := 0
+	n := len(s)
+	var i int
+	for {
+		// find the '='
+		for i = start; i < n && s[i] != '='; {
+			i++
+		}
+
+		if start >= n || i+1 >= n {
+			break
+		}
+
+		key := s[start:i]
+		start = i + 1
+		if s[start] == '"' {
+			for i = start + 1; i < n && s[i] != '"'; {
+				i++
+			}
+			if i < n {
+				result[strings.TrimSpace(key)] = strings.TrimSpace(s[start+1 : i])
+			}
+			if i+1 < n && s[i+1] == ',' {
+				start = i + 2
+			} else {
+				break
+			}
+		} else {
+			for i = start; i < n && s[i] != ','; {
+				i++
+			}
+			if i < n {
+				result[strings.TrimSpace(key)] = strings.TrimSpace(s[start:i])
+				start = i + 1
+			} else {
+				result[strings.TrimSpace(key)] = strings.TrimSpace(s[start:])
+				break
+			}
+		}
+	}
+
+	return &result
+}
+
+func parseEnvFiles(s string) *map[string]string {
+	result := make(map[string]string)
+	for _, envFilePath := range strings.Split(s, ",") {
+		envFilePath = strings.TrimSpace(envFilePath)
+		f, err := os.Open(envFilePath)
+		if err != nil {
+			log.WithFields(log.Fields{
+				log.ErrorKey: err,
+				"file":       envFilePath,
+			}).Error("Read file failed: " + envFilePath)
+			continue
+		}
+		r, err := envparse.Parse(f)
+		if err != nil {
+			log.WithFields(log.Fields{
+				log.ErrorKey: err,
+				"file":       envFilePath,
+			}).Error("Parse env file failed: " + envFilePath)
+			continue
+		}
+		for k, v := range r {
+			result[k] = v
+		}
+	}
+	return &result
+}
+
+// GetEnv returns slice of strings with keys separated from values by single "=". An environment string example:
 //  environment = A="env 1",B="this is a test"
 func (c *Entry) GetEnv(key string) []string {
 	value, ok := c.keyValues[key]
-	env := make([]string, 0)
+	result := make([]string, 0)
 
 	if ok {
-		start := 0
-		n := len(value)
-		var i int
-		for {
-			for i = start; i < n && value[i] != '='; {
-				i++
-			}
-			key := value[start:i]
-			start = i + 1
-			if value[start] == '"' {
-				for i = start + 1; i < n && value[i] != '"'; {
-					i++
-				}
-				if i < n {
-					env = append(env, fmt.Sprintf("%s=%s", strings.TrimSpace(key), strings.TrimSpace(value[start+1:i])))
-				}
-				if i+1 < n && value[i+1] == ',' {
-					start = i + 2
-				} else {
-					break
-				}
-			} else {
-				for i = start; i < n && value[i] != ','; {
-					i++
-				}
-				if i < n {
-					env = append(env, fmt.Sprintf("%s=%s", strings.TrimSpace(key), strings.TrimSpace(value[start:i])))
-					start = i + 1
-				} else {
-					env = append(env, fmt.Sprintf("%s=%s", strings.TrimSpace(key), strings.TrimSpace(value[start:])))
-					break
-				}
+		for k, v := range *parseEnv(value) {
+			tmp, err := NewStringExpression("program_name", c.GetProgramName(),
+				"process_num", c.GetString("process_num", "0"),
+				"group_name", c.GetGroupName(),
+				"here", c.ConfigDir).Eval(fmt.Sprintf("%s=%s", k, v))
+			if err == nil {
+				result = append(result, tmp)
 			}
 		}
 	}
 
-	result := make([]string, 0)
-	for i := 0; i < len(env); i++ {
-		tmp, err := NewStringExpression("program_name", c.GetProgramName(),
-			"process_num", c.GetString("process_num", "0"),
-			"group_name", c.GetGroupName(),
-			"here", c.ConfigDir).Eval(env[i])
-		if err == nil {
-			result = append(result, tmp)
-		}
-	}
 	return result
 }
 
-// GetString get the value of key as string
+// GetEnvFromFiles returns slice of strings with keys separated from values by single "=". An envFile example:
+//  envFiles = global.env,prod.env
+// cat global.env
+// varA=valueA
+func (c *Entry) GetEnvFromFiles(key string) []string {
+	value, ok := c.keyValues[key]
+	result := make([]string, 0)
+
+	if ok {
+		for k, v := range *parseEnvFiles(value) {
+			tmp, err := NewStringExpression("program_name", c.GetProgramName(),
+				"process_num", c.GetString("process_num", "0"),
+				"group_name", c.GetGroupName(),
+				"here", c.ConfigDir).Eval(fmt.Sprintf("%s=%s", k, v))
+			if err == nil {
+				result = append(result, tmp)
+			}
+		}
+	}
+
+	return result
+}
+
+// GetString returns value of the key as a string
 func (c *Entry) GetString(key string, defValue string) string {
 	s, ok := c.keyValues[key]
 
@@ -413,7 +472,7 @@ func (c *Entry) GetString(key string, defValue string) string {
 	return defValue
 }
 
-//GetStringExpression get the value of key as string and attempt to parse it with StringExpression
+// GetStringExpression returns value of key as a string and attempts to parse it with StringExpression
 func (c *Entry) GetStringExpression(key string, defValue string) string {
 	s, ok := c.keyValues[key]
 	if !ok || s == "" {
@@ -442,7 +501,7 @@ func (c *Entry) GetStringExpression(key string, defValue string) string {
 	return result
 }
 
-// GetStringArray get the string value and split it as array with "sep"
+// GetStringArray gets string value and split it with "sep" to slice
 func (c *Entry) GetStringArray(key string, sep string) []string {
 	s, ok := c.keyValues[key]
 
@@ -452,7 +511,7 @@ func (c *Entry) GetStringArray(key string, sep string) []string {
 	return make([]string, 0)
 }
 
-// GetBytes get the value of key as the bytes setting.
+// GetBytes returns value of the key as bytes setting.
 //
 //	logSize=1MB
 //	logSize=1GB
@@ -487,7 +546,7 @@ func (c *Entry) parse(section *ini.Section) {
 
 func (c *Config) parseGroup(cfg *ini.Ini) {
 
-	//parse the group at first
+	// parse the group at first
 	for _, section := range cfg.Sections() {
 		if strings.HasPrefix(section.Name, "group:") {
 			entry := c.createEntry(section.Name, c.GetConfigFileDir())
@@ -502,7 +561,7 @@ func (c *Config) parseGroup(cfg *ini.Ini) {
 }
 
 func (c *Config) isProgramOrEventListener(section *ini.Section) (bool, string) {
-	//check if it is a program or event listener section
+	// check if it is a program or event listener section
 	isProgram := strings.HasPrefix(section.Name, "program:")
 	isEventListener := strings.HasPrefix(section.Name, "eventlistener:")
 	prefix := ""
@@ -520,12 +579,11 @@ func (c *Config) isProgramOrEventListener(section *ini.Section) (bool, string) {
 func (c *Config) parseProgram(cfg *ini.Ini) []string {
 	loadedPrograms := make([]string, 0)
 	for _, section := range cfg.Sections() {
-
 		programOrEventListener, prefix := c.isProgramOrEventListener(section)
 
-		//if it is program or event listener
+		// if it is program or event listener
 		if programOrEventListener {
-			//get the number of processes
+			// get the number of processes
 			numProcs, err := section.GetInt("numprocs")
 			programName := section.Name[len(prefix):]
 			if err != nil {
@@ -545,12 +603,20 @@ func (c *Config) parseProgram(cfg *ini.Ini) []string {
 				originalProcName = procName
 			}
 
+			originalCmd := section.GetValueWithDefault("command", "")
+
 			for i := 1; i <= numProcs; i++ {
 				envs := NewStringExpression("program_name", programName,
 					"process_num", fmt.Sprintf("%d", i),
 					"group_name", c.ProgramGroup.GetGroup(programName, programName),
 					"here", c.GetConfigFileDir())
-				cmd, err := envs.Eval(section.GetValueWithDefault("command", ""))
+				envValue, err := section.GetValue("environment")
+				if err == nil {
+					for k, v := range *parseEnv(envValue) {
+						envs.Add(fmt.Sprintf("ENV_%s", k), v)
+					}
+				}
+				cmd, err := envs.Eval(originalCmd)
 				if err != nil {
 					log.WithFields(log.Fields{
 						log.ErrorKey: err,
@@ -570,7 +636,7 @@ func (c *Config) parseProgram(cfg *ini.Ini) []string {
 				}
 
 				section.Add("process_name", procName)
-				section.Add("numprocs_start", fmt.Sprintf("%d", (i-1)))
+				section.Add("numprocs_start", fmt.Sprintf("%d", i-1))
 				section.Add("process_num", fmt.Sprintf("%d", i))
 				entry := c.createEntry(procName, c.GetConfigFileDir())
 				entry.parse(section)
@@ -582,21 +648,19 @@ func (c *Config) parseProgram(cfg *ini.Ini) []string {
 		}
 	}
 	return loadedPrograms
-
 }
 
-// String convert the configuration to string represents
+// String converts configuration to the string
 func (c *Config) String() string {
 	buf := bytes.NewBuffer(make([]byte, 0))
-	fmt.Fprintf(buf, "configFile:%s\n", c.configFile)
-	for k, v := range c.entries {
-		fmt.Fprintf(buf, "[program:%s]\n", k)
+	for _, v := range c.entries {
+		fmt.Fprintf(buf, "[%s]\n", v.Name)
 		fmt.Fprintf(buf, "%s\n", v.String())
 	}
 	return buf.String()
 }
 
-// RemoveProgram remove a program entry by its name
+// RemoveProgram removes program entry by its name
 func (c *Config) RemoveProgram(programName string) {
 	delete(c.entries, programName)
 	c.ProgramGroup.Remove(programName)

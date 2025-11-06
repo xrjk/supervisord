@@ -2,13 +2,14 @@ package main
 
 import (
 	"fmt"
+	"net/http"
+	"os"
+	"strings"
+
 	"github.com/jessevdk/go-flags"
 	"github.com/ochinchina/supervisord/config"
 	"github.com/ochinchina/supervisord/types"
 	"github.com/ochinchina/supervisord/xmlrpcclient"
-	"net/http"
-	"os"
-	"strings"
 )
 
 // CtlCommand the entry of ctl command
@@ -55,7 +56,7 @@ type SignalCommand struct {
 type LogtailCommand struct {
 }
 
-// CmdCheckWrapperCommand A wrapper can be use to check whether
+// CmdCheckWrapperCommand A wrapper can be used to check whether
 // number of parameters is valid or not
 type CmdCheckWrapperCommand struct {
 	// Original cmd
@@ -84,9 +85,9 @@ func (x *CtlCommand) getServerURL() string {
 	if x.ServerURL != "" {
 		return x.ServerURL
 	} else if _, err := os.Stat(options.Configuration); err == nil {
-		config := config.NewConfig(options.Configuration)
-		config.Load()
-		if entry, ok := config.GetSupervisorctl(); ok {
+		myconfig := config.NewConfig(options.Configuration)
+		myconfig.Load()
+		if entry, ok := myconfig.GetSupervisorctl(); ok {
 			serverurl := entry.GetString("serverurl", "")
 			if serverurl != "" {
 				return serverurl
@@ -102,9 +103,9 @@ func (x *CtlCommand) getUser() string {
 	if x.User != "" {
 		return x.User
 	} else if _, err := os.Stat(options.Configuration); err == nil {
-		config := config.NewConfig(options.Configuration)
-		config.Load()
-		if entry, ok := config.GetSupervisorctl(); ok {
+		myconfig := config.NewConfig(options.Configuration)
+		myconfig.Load()
+		if entry, ok := myconfig.GetSupervisorctl(); ok {
 			user := entry.GetString("username", "")
 			return user
 		}
@@ -118,9 +119,9 @@ func (x *CtlCommand) getPassword() string {
 	if x.Password != "" {
 		return x.Password
 	} else if _, err := os.Stat(options.Configuration); err == nil {
-		config := config.NewConfig(options.Configuration)
-		config.Load()
-		if entry, ok := config.GetSupervisorctl(); ok {
+		myconfig := config.NewConfig(options.Configuration)
+		myconfig.Load()
+		if entry, ok := myconfig.GetSupervisorctl(); ok {
 			password := entry.GetString("password", "")
 			return password
 		}
@@ -186,6 +187,7 @@ func (x *CtlCommand) status(rpcc *xmlrpcclient.XMLRPCClient, processes []string)
 	if reply, err := rpcc.GetAllProcessInfo(); err == nil {
 		x.showProcessInfo(&reply, processesMap)
 	} else {
+		fmt.Fprintf(os.Stderr, "%s\n", err)
 		os.Exit(1)
 	}
 }
@@ -245,6 +247,7 @@ func (x *CtlCommand) shutdown(rpcc *xmlrpcclient.XMLRPCClient) {
 			fmt.Printf("Hmmm! Something gone wrong?!\n")
 		}
 	} else {
+		fmt.Fprintf(os.Stderr, "%s\n", err)
 		os.Exit(1)
 	}
 }
@@ -263,6 +266,7 @@ func (x *CtlCommand) reload(rpcc *xmlrpcclient.XMLRPCClient) {
 			fmt.Printf("Removed Groups: %s\n", strings.Join(reply.RemovedGroup, ","))
 		}
 	} else {
+		fmt.Fprintf(os.Stderr, "%s\n", err)
 		os.Exit(1)
 	}
 }
@@ -327,7 +331,7 @@ func (x *CtlCommand) showProcessInfo(reply *xmlrpcclient.AllProcessInfoReply, pr
 			if !x.showGroupName() {
 				processName = pinfo.Name
 			}
-			fmt.Printf("%s%-33s%-10s%s%s\n", x.getANSIColor(pinfo.Statename), processName, pinfo.Statename, description, "\x1b[0m")
+			fmt.Printf("%s%-33s%-10s%s%s\n", x.getANSIColor(strings.ToUpper(pinfo.Statename)), processName, pinfo.Statename, description, "\x1b[0m")
 		}
 	}
 }
@@ -416,7 +420,7 @@ func (pc *PidCommand) Execute(args []string) error {
 	return nil
 }
 
-// Execute tail the stdout/stderr of a program through http interrface
+// Execute tail the stdout/stderr of a program through http interface
 func (lc *LogtailCommand) Execute(args []string) error {
 	program := args[0]
 	go func() {

@@ -3,8 +3,6 @@ package main
 import (
 	"bufio"
 	"fmt"
-	"github.com/jessevdk/go-flags"
-	log "github.com/sirupsen/logrus"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -12,7 +10,15 @@ import (
 	"strings"
 	"syscall"
 	"unicode"
+
+	"github.com/jessevdk/go-flags"
+	"github.com/ochinchina/go-ini"
+	"github.com/ochinchina/supervisord/config"
+	"github.com/ochinchina/supervisord/logger"
+	log "github.com/sirupsen/logrus"
 )
+
+var BuildVersion string = ""
 
 // Options the command line options
 type Options struct {
@@ -22,11 +28,17 @@ type Options struct {
 }
 
 func init() {
-	log.SetOutput(os.Stdout)
-	if runtime.GOOS == "windows" {
-		log.SetFormatter(&log.TextFormatter{DisableColors: true, FullTimestamp: true})
+	nullLogger := logger.NewNullLogger(logger.NewNullLogEventEmitter())
+	log.SetOutput(nullLogger)
+	logFormat := os.Getenv("LOG_FORMAT")
+	if logFormat == "json" {
+		log.SetFormatter(&log.JSONFormatter{})
 	} else {
-		log.SetFormatter(&log.TextFormatter{DisableColors: false, FullTimestamp: true})
+		if runtime.GOOS == "windows" {
+			log.SetFormatter(&log.TextFormatter{DisableColors: true, FullTimestamp: true})
+		} else {
+			log.SetFormatter(&log.TextFormatter{DisableColors: false, FullTimestamp: true})
+		}
 	}
 	log.SetLevel(log.DebugLevel)
 }
@@ -50,7 +62,7 @@ func loadEnvFile() {
 	if len(options.EnvFile) <= 0 {
 		return
 	}
-	//try to open the environment file
+	// try to open the environment file
 	f, err := os.Open(options.EnvFile)
 	if err != nil {
 		log.WithFields(log.Fields{"file": options.EnvFile}).Error("Fail to open environment file")
@@ -59,26 +71,26 @@ func loadEnvFile() {
 	defer f.Close()
 	reader := bufio.NewReader(f)
 	for {
-		//for each line
+		// for each line
 		line, err := reader.ReadString('\n')
 		if err != nil {
 			break
 		}
-		//if line starts with '#', it is a comment line, ignore it
+		// if line starts with '#', it is a comment line, ignore it
 		line = strings.TrimSpace(line)
 		if len(line) > 0 && line[0] == '#' {
 			continue
 		}
-		//if environment variable is exported with "export"
+		// if environment variable is exported with "export"
 		if strings.HasPrefix(line, "export") && len(line) > len("export") && unicode.IsSpace(rune(line[len("export")])) {
 			line = strings.TrimSpace(line[len("export"):])
 		}
-		//split the environment variable with "="
+		// split the environment variable with "="
 		pos := strings.Index(line, "=")
 		if pos != -1 {
 			k := strings.TrimSpace(line[0:pos])
 			v := strings.TrimSpace(line[pos+1:])
-			//if key and value are not empty, put it into the environment
+			// if key and value are not empty, put it into the environment
 			if len(k) > 0 && len(v) > 0 {
 				os.Setenv(k, v)
 			}
@@ -96,12 +108,13 @@ func loadEnvFile() {
 // 6. ../supervisord.conf (Relative to the executable)
 func findSupervisordConf() (string, error) {
 	possibleSupervisordConf := []string{options.Configuration,
-		"./supervisord.conf",
+		"./supervisord.ini",
 		"./etc/supervisord.conf",
 		"/etc/supervisord.conf",
 		"/etc/supervisor/supervisord.conf",
 		"../etc/supervisord.conf",
-		"../supervisord.conf"}
+		"../supervisord.conf",
+		"./supervisord.conf"}
 
 	for _, file := range possibleSupervisordConf {
 		if _, err := os.Stat(file); err == nil {
@@ -119,35 +132,67 @@ func findSupervisordConf() (string, error) {
 func runServer() {
 	// infinite loop for handling Restart ('reload' command)
 	loadEnvFile()
-	for true {
-		options.Configuration, _ = findSupervisordConf()
+	for {
+		if len(options.Configuration) <= 0 {
+			options.Configuration, _ = findSupervisordConf()
+		}
 		s := NewSupervisor(options.Configuration)
 		initSignals(s)
-		if _, _, _, sErr := s.Reload(); sErr != nil {
+		if _, _, _, sErr := s.Reload(true); sErr != nil {
 			panic(sErr)
 		}
 		s.WaitForExit()
 	}
 }
 
+// Get the supervisord log file
+func getSupervisordLogFile(configFile string) string {
+	configFileDir := filepath.Dir(configFile)
+	env := config.NewStringExpression("here", configFileDir)
+	myini := ini.NewIni()
+	myini.LoadFile(configFile)
+	cwd, err := os.Getwd()
+	if err != nil {
+		cwd = "."
+	}
+	logFile := myini.GetValueWithDefault("supervisord", "logfile", filepath.Join(cwd, "supervisord.log"))
+	logFile, err = env.Eval(logFile)
+	if err == nil {
+		return logFile
+	} else {
+		return filepath.Join(".", "supervisord.log")
+	}
+}
+
 func main() {
+	if BuildVersion != "" { VERSION = BuildVersion }
 	ReapZombie()
+
+	// when execute `supervisord` without sub-command, it should start the server
+	parser.Command.SubcommandsOptional = true
+	parser.CommandHandler = func(command flags.Commander, args []string) error {
+		if command == nil {
+			log.SetOutput(os.Stdout)
+			if options.Daemon {
+				logFile := getSupervisordLogFile(options.Configuration)
+				Daemonize(logFile, runServer)
+			} else {
+				runServer()
+			}
+			os.Exit(0)
+		}
+		return command.Execute(args)
+	}
 
 	if _, err := parser.Parse(); err != nil {
 		flagsErr, ok := err.(*flags.Error)
 		if ok {
 			switch flagsErr.Type {
 			case flags.ErrHelp:
-				fmt.Fprintln(os.Stdout, err)
+				_, _ = fmt.Fprintln(os.Stdout, err)
 				os.Exit(0)
-			case flags.ErrCommandRequired:
-				if options.Daemon {
-					Deamonize(runServer)
-				} else {
-					runServer()
-				}
 			default:
-				fmt.Fprintf(os.Stderr, "error when parsing command: %s\n", err)
+				_, _ = fmt.Fprintf(os.Stderr, "error when parsing command: %s\n", err)
 				os.Exit(1)
 			}
 		}
